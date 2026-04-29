@@ -35,3 +35,9 @@ genomes/*
 # docs
 *stats.json
 *docx
+# Local benchmark data (downloaded sources, built .osa, intermediate VCFs)
+data/
+
+# tabix index files cached during remote queries (placed in CWD by htslib)
+*.tbi
+*.csi

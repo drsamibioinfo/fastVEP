@@ -13,9 +13,10 @@ use std::io::BufRead;
 /// `mis.z_score`, `syn.z_score`). For v4 we also collapse to a single
 /// canonical-transcript row per gene, since v4 emits one row per transcript.
 pub fn parse_gnomad_gene_scores<R: BufRead>(reader: R) -> Result<Vec<GeneRecord>> {
-    let mut records = Vec::new();
-    let mut seen_genes: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut col_indices: Option<GnomadGeneCols> = None;
+    let mut gene_order: Vec<String> = Vec::new();
+    let mut gene_best: std::collections::HashMap<String, (u8, String)> =
+        std::collections::HashMap::new();
 
     for line in reader.lines() {
         let line = line.context("Reading gnomAD gene scores")?;
@@ -42,23 +43,30 @@ pub fn parse_gnomad_gene_scores<R: BufRead>(reader: R) -> Result<Vec<GeneRecord>
             continue;
         }
 
-        // gnomAD v4 emits one row per transcript per gene. Prefer the
-        // canonical / MANE_select row when those columns exist; otherwise
-        // accept the first row we see for each gene.
-        if let Some(idx) = cols.canonical {
-            if !is_truthy(fields.get(idx).copied().unwrap_or("")) {
-                if let Some(mane_idx) = cols.mane_select {
-                    if !is_truthy(fields.get(mane_idx).copied().unwrap_or("")) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
+        // gnomAD v4 emits one row per transcript per gene. Rank candidate rows
+        // so the highest-ranked row wins regardless of input order:
+        // canonical=true (2) > mane_select=true (1) > neither (dropped).
+        // When neither column exists (v2.1: one row per gene), rank=0 and the
+        // first-seen row per gene wins.
+        let rank: u8 = if cols.canonical.is_some() || cols.mane_select.is_some() {
+            let canonical_truthy = cols
+                .canonical
+                .map(|i| is_truthy(fields.get(i).copied().unwrap_or("")))
+                .unwrap_or(false);
+            let mane_truthy = cols
+                .mane_select
+                .map(|i| is_truthy(fields.get(i).copied().unwrap_or("")))
+                .unwrap_or(false);
+            if canonical_truthy {
+                2
+            } else if mane_truthy {
+                1
+            } else {
+                continue;
             }
-        }
-        if !seen_genes.insert(gene.to_string()) {
-            continue;
-        }
+        } else {
+            0
+        };
 
         let mut parts = Vec::new();
 
@@ -87,13 +95,30 @@ pub fn parse_gnomad_gene_scores<R: BufRead>(reader: R) -> Result<Vec<GeneRecord>
             continue;
         }
 
-        records.push(GeneRecord {
-            gene_symbol: gene.to_string(),
-            json: format!("{{{}}}", parts.join(",")),
-        });
+        let json = format!("{{{}}}", parts.join(","));
+        match gene_best.get(gene) {
+            None => {
+                gene_order.push(gene.to_string());
+                gene_best.insert(gene.to_string(), (rank, json));
+            }
+            Some((existing_rank, _)) => {
+                if rank > *existing_rank {
+                    gene_best.insert(gene.to_string(), (rank, json));
+                }
+            }
+        }
     }
 
-    Ok(records)
+    Ok(gene_order
+        .into_iter()
+        .map(|gene| {
+            let (_, json) = gene_best.remove(&gene).expect("gene_best entry missing");
+            GeneRecord {
+                gene_symbol: gene,
+                json,
+            }
+        })
+        .collect())
 }
 
 fn is_truthy(s: &str) -> bool {
@@ -208,5 +233,28 @@ TP53\tENST_canonical\ttrue\ttrue\t0.9999\t0.05\t5.67\t-0.34
         assert!(records[0].json.contains("\"loeuf\":0.0300"));
         assert!(records[0].json.contains("\"misZ\":3.45"));
         assert_eq!(records[1].gene_symbol, "TP53");
+    }
+
+    #[test]
+    fn test_parse_gnomad_gene_scores_v41_canonical_wins_regardless_of_row_order() {
+        // Pre-fix the parser accepted the first row whose canonical OR
+        // mane_select was truthy and locked the gene out for later rows. So a
+        // mane_select-only row appearing before the canonical row would win,
+        // and BRCA1 would carry the wrong transcript's metrics.
+        let data = "\
+gene\ttranscript\tcanonical\tmane_select\tlof.pLI\tlof.oe_ci.upper\tmis.z_score\tsyn.z_score
+BRCA1\tENST_mane_only\tfalse\ttrue\t0.5\t0.99\t1.5\t0.1
+BRCA1\tENST_canonical\ttrue\ttrue\t1.0\t0.03\t3.45\t0.12
+BRCA1\tENST_alt\tfalse\tfalse\t0.2\t0.80\t0.5\t0.0
+";
+        let records = parse_gnomad_gene_scores(data.as_bytes()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].gene_symbol, "BRCA1");
+        assert!(
+            records[0].json.contains("\"pLI\":1.0000"),
+            "canonical row should win regardless of order, got {}",
+            records[0].json
+        );
+        assert!(records[0].json.contains("\"loeuf\":0.0300"));
     }
 }

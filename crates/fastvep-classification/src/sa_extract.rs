@@ -25,18 +25,23 @@ pub struct GnomadData {
     pub asj_af: Option<f64>,
     #[serde(rename = "finAf")]
     pub fin_af: Option<f64>,
+    #[serde(rename = "midAf")]
+    pub mid_af: Option<f64>,
     #[serde(rename = "othAf")]
     pub oth_af: Option<f64>,
+    #[serde(rename = "remainingAf")]
+    pub remaining_af: Option<f64>,
     #[serde(rename = "sasAf")]
     pub sas_af: Option<f64>,
 }
 
 impl GnomadData {
-    /// Maximum allele frequency across all populations.
+    /// Maximum allele frequency across all populations. Includes both
+    /// gnomAD v2.1 codes (`oth`) and v4.1 codes (`mid`, `remaining`).
     pub fn max_pop_af(&self) -> Option<f64> {
         [
             self.all_af, self.afr_af, self.nfe_af, self.eas_af, self.amr_af, self.asj_af,
-            self.fin_af, self.oth_af, self.sas_af,
+            self.fin_af, self.mid_af, self.oth_af, self.remaining_af, self.sas_af,
         ]
         .into_iter()
         .flatten()

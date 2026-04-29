@@ -8,9 +8,11 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::BufRead;
 
-/// Population keys to extract from gnomAD VCF INFO field.
+/// Population keys to extract from gnomAD VCF INFO field. Covers both
+/// gnomAD v2.1 codes (`oth`) and the v4.1 codes (`mid`, `remaining`); a
+/// missing key is silently skipped per VCF, so listing all is harmless.
 const POPULATIONS: &[&str] = &[
-    "afr", "amr", "asj", "eas", "fin", "nfe", "oth", "sas",
+    "afr", "amr", "asj", "eas", "fin", "mid", "nfe", "oth", "remaining", "sas",
 ];
 
 /// Parse a gnomAD sites-only VCF and produce sorted `AnnotationRecord`s.

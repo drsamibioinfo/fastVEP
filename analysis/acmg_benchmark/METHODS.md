@@ -232,51 +232,189 @@ When a multi-sample VCF with trio configuration is provided:
 
 ### Methodology
 
-We evaluate fastVEP's ACMG classifier concordance against ClinVar 2-star+
-GRCh38 variants as the gold standard.
+The benchmark runs `fastvep annotate --acmg --pick` end-to-end on every
+ClinVar 2-star+ GRCh38 SNV / small indel and compares the issued ACMG
+classification against the ClinVar review-panel call.
 
-The concordance analysis uses a Monte Carlo simulation with
-population-level priors derived from published analyses (Pejaver 2022,
-ClinGen SVI calibrations). For each ClinVar variant:
+Concrete pipeline (`data/benchmark/run_full_benchmark.sh`):
 
-1. **Consequence parsing**: HGVS notation → variant consequence type.
-2. **Criteria simulation**: each ACMG criterion is evaluated
-   probabilistically using priors for the probability that the criterion
-   fires given the variant type.
-3. **Classification**: combination rules (19 total) are applied to
-   determine the predicted classification.
-4. **Monte Carlo averaging**: each variant is simulated 10 times; the
-   majority-vote classification is used.
+1. **Input**: ClinVar VCF filtered to review_status ≥ 2 stars
+   (`criteria_provided,_multiple_submitters,_no_conflicts` and stricter)
+   on GRCh38, plus a parallel truth TSV (`chrom`, `pos`, `ref`, `alt`,
+   `gene`, `clnsig`, `normalized_class`, `review_stars`, `rcv`).
+2. **Annotation**: GFF3 + FASTA cache + supplementary annotation
+   directory (`--sa-dir`) loaded once; all 673,660 variants annotated
+   with `--acmg --pick` to a single JSON file.
+3. **Concordance** (`analysis/acmg_benchmark/real_data/03_evaluate_concordance.py`):
+   stream-parses the JSON via `ijson` (memory-bounded — output is ~24 GB
+   pretty-printed), keys each variant on `(chrom, pos, ref, alt)`,
+   reads the picked transcript's `acmg.classification`, and fills a
+   5×6 truth × predicted matrix (extra column for NoCall).
 
-### Key Prior Probabilities
+Outputs: `concordance_summary.txt` (free-text rollup),
+`concordance_matrix.csv`, `concordance_by_chrom.csv`,
+`concordance_by_consequence.csv`, `criterion_firing_rates.csv`,
+`rule_distribution.csv`, `discrepancies.tsv` (top 10k
+opposite-direction calls).
 
-| Parameter | Pathogenic | VUS | Benign |
-|-----------|-----------|-----|--------|
-| PVS1 (null variant) | 85% | 50% | 15% |
-| PM2_Supporting (rare in gnomAD) | 95% | 80% | 15% |
-| BA1 (AF > 5%) | — | — | 60% (B), 25% (LB) |
-| PP3_Strong (REVEL ≥ 0.932, missense) | 15% | — | — |
-| PP3_Moderate (REVEL 0.773–0.932) | 25% | — | — |
-| BP4_Strong (REVEL ≤ 0.016, missense) | — | — | 25% |
-| BP4_VeryStrong (REVEL ≤ 0.003) | — | — | 5% |
+### Supplementary Annotation Build
 
-### Limitations
+| Source | Build | Records |
+|--------|-------|---------|
+| ClinVar (.osa) | `fastvep sa-build --source clinvar` from `clinvar.vcf.gz` | 4,402,501 |
+| ClinVar protein (.oga) | `--source clinvar_protein` from `variant_summary.txt.gz` | 4,554 genes |
+| gnomAD v4.1 exomes (.osa, per-chrom) | tabix-extracted to ClinVar 2-star+ regions (24,350 merged ranges, `bedtools merge -d 5000`), `--source gnomad` per chrom (chr1..22, X, Y, MT) | 25 × .osa |
+| gnomAD v4.1 gene constraints (.oga) | `--source gnomad_gene` from `gnomad.v4.1.constraint_metrics.tsv` | 18,173 genes |
+| REVEL v1.3 (.osa, per-chrom) | per-chromosome split from `revel-v1.3_all_chromosomes.zip` to bound RAM | 24 × .osa |
 
-1. **Inherently conservative**: missing PS3/BS3/BS4/PP1/PP4/BP5 means
-   many pathogenic variants drop to VUS for lack of functional /
-   segregation / phenotype evidence. Manual curators outperform the
-   automated classifier for these categories by design.
-2. **PVS1 / PM3 / PS1 / BP7 fallbacks**: when the pipeline does not yet
-   populate Abou Tayoun decision-tree signals (NMD, %protein removed,
-   etc.), exon-edge / deep-intronic positions, or splice-position
-   pathogenic catalogs, those criteria fall back to conservative legacy
-   behavior.
+The gnomAD bulk-extraction path uses `tabix` against the public bgz on
+`gs://gcp-public-data--gnomad/...`. We tested the gnomAD GraphQL API as
+an alternative: it is fine for ad-hoc per-variant lookups, but
+**rate-limits aggressively (HTTP 429) even single-threaded with 5-try
+exponential backoff**, so it cannot replace tabix for the 24 K-region
+extraction.
+
+### Speed (single host, Apple Silicon, release build)
+
+| Stage | Time | Throughput |
+|-------|------|-----------|
+| `fastvep annotate --acmg --pick` on 673,660 variants | **2,591 s (43 min)** | **260 variants/s** |
+| Streaming concordance parse of 24 GB JSON via ijson | ~12 min | — |
+
+(All 25 SA databases loaded once at process start; 99 % CPU during the
+annotation phase.)
+
+### Real-Data Concordance (ClinVar 2-star+, April 2026 release)
+
+Truth records: **673,660** · Classified: **627,375** · Truth-not-annotated: **46,285** (variants where `--pick` selected a transcript without an ACMG block — typically intergenic / regulatory regions where no canonical-transcript context exists).
+
+#### Truth × predicted matrix
+
+| Truth ↓ / Predicted → | P | LP | VUS | LB | B | NoCall |
+|--|--:|--:|--:|--:|--:|--:|
+| Pathogenic (n=49,882) | 80 | 7,756 | 42,025 | 12 | 8 | 1 |
+| Likely Pathogenic (n=11,589) | 5 | 2,418 | 9,161 | 5 | 0 | 0 |
+| VUS (n=288,912) | 1 | 156 | 279,031 | 7,749 | 1,975 | 0 |
+| Likely Benign (n=126,036) | 0 | 1 | 121,970 | 778 | 3,287 | 0 |
+| Benign (n=150,957) | 0 | 5 | 100,833 | 1,837 | 48,282 | 0 |
+
+#### Headline metrics
+
+| Metric | Value |
+|--------|------:|
+| Exact-match (truth = predicted) | 52.7 % |
+| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | 54.7 % |
+| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **31 / 627,375 = 0.005 %** |
+| NoCall after annotation | 0.0 % |
+
+Per-class same-direction recall:
+
+| Truth class | Same-dir count | Recall |
+|-------------|---------------:|------:|
+| Pathogenic | 7,836 / 49,882 | **15.7 %** |
+| Likely Pathogenic | 2,423 / 11,589 | **20.9 %** |
+| VUS | 279,031 / 288,912 | **96.6 %** |
+| Likely Benign | 4,065 / 126,036 | **3.2 %** |
+| Benign | 50,119 / 150,957 | **33.2 %** |
+
+#### Most-triggered combination rules
+
+| Rule | Count |
+|------|------:|
+| BA1 | 42,081 |
+| ≥2 BS | 11,471 |
+| PS + 1–2 PM | 9,463 |
+| BS + BP | 7,713 |
+| ≥2 BP | 2,668 |
+| PVS + PM | 503 |
+| PVS + ≥1 PP (SVI Sept 2020) | 304 |
+| PS + 2 PM + ≥2 PP | 62 |
+
+### Interpretation
+
+- **High specificity, low sensitivity for P/LP** is expected and by
+  design. The classifier is automation-only; the criteria carrying the
+  highest evidence weight in real curation — PS3 (functional), BS3
+  (functional non-damaging), BS4 (lack of segregation), PP1 (segregation),
+  PP4 (phenotype-specific), PP5/BP6 (reputable source, disabled per
+  ClinGen SVI) — are unavailable from variant-level data alone, so most
+  P/LP variants drop to VUS for lack of those signals.
+- **Opposite-direction rate is 31 / 627,375 (0.005 %)**: when the
+  classifier *does* commit to a directional call, it almost never
+  contradicts the curated review-panel call. Discrepancies are listed
+  in `data/benchmark/output_full/discrepancies.tsv` for case-by-case
+  review.
+- **Likely_benign collapses into VUS** (3.2 % recall): without PS3/BS3
+  data, BP4 is the main driver toward benign — and when only one
+  benign-supporting criterion fires it is sub-threshold for any benign
+  rule (≥1 BS + ≥1 BP, or ≥2 BP), so the call falls to VUS.
+- **Pathogenic exact-match (80 / 49,882) vs. same-direction (7,836 /
+  49,882)** shows that of the variants the classifier reaches P/LP on,
+  it lands at LP rather than P most of the time — consistent with the
+  ClinGen SVI Sept 2020 PVS+PP rule which the classifier triggers
+  heavily (304 firings) but which only escalates to LP, not P.
+
+### Two diagnostic findings worth flagging
+
+The matrix is dominated by two patterns that look like classifier bugs
+but aren't — they're both downstream of missing SA data sources rather
+than incorrect criterion logic. Documenting them here so future
+benchmark deltas are interpretable.
+
+**(1) Likely-benign collapse to VUS (3.2 % LB recall)**
+
+Most LB truth is synonymous (62 K) or intronic (25 K). For these
+classes, BP7 is the canonical benign-supporting criterion. BP7 fires
+**zero times** in this run because Walker 2023 requires SpliceAI ≤ 0.2
+*and* PhyloP < 2.0, and **neither SpliceAI nor PhyloP SA databases were
+loaded**. With BP7 silenced, synonymous LB has no path to the ≥2 BP
+or BS+BP rules; everything falls to VUS. (BP4 missense / REVEL fires
+on the missense subset of LB only.)
+
+**(2) Pathogenic exact-match (80 / 49,882) vs same-direction (7,836 / 49,882)**
+
+PVS1 fires only on 10.5 % of pathogenic-truth variants because
+`is_lof_intolerant_gene` requires gnomAD `pLI ≥ 0.9` *or* `LOEUF ≤
+0.35` *or* an OMIM phenotype, and **OMIM was not loaded** in this run.
+Many stop_gained / frameshift pathogenic ClinVar entries are in genes
+that don't meet the strict gnomAD thresholds (rare LOF tolerance,
+small-N constraint), so they get filtered out without OMIM as a
+backstop. Where PVS1 *does* fire, the partner criterion gating is
+PM2_Supporting (9.0 % on Pathogenic) — the rate-limiting step for the
+PVS+PP rule (304 firings) which lands at LP rather than P.
+
+### Data sources that would change the picture if loaded
+
+| SA source | Affects | Expected delta |
+|-----------|---------|----------------|
+| **PhyloP / GERP** (.osa) | BP7 firing on synonymous/deep-intronic | Should lift LB recall from 3.2 % toward ~30 % |
+| **SpliceAI** (.osa) | PP3 splice, BP4 splice, BP7 splice gate, PVS1 splice grading | Lifts P recall on intronic/canonical-splice; flips many intronic VUS → P/LP or B |
+| **OMIM** (.oga) | PVS1 LOF-gene fallback (alongside pLI/LOEUF) | Lifts P recall on stop_gained / frameshift in non-constrained disease genes |
+
+These are infrastructure (data) rather than code changes — the
+classifier already consumes all four when available (`phylop`, `gerp`,
+`spliceai`, `omim` json keys in `sa_extract.rs`). We simply did not
+build them for this benchmark.
+
+### Limitations of the automated benchmark
+
+1. **Inherently conservative**: PS3/BS3/BS4/PP1/PP4/BP5 are all
+   NotEvaluated. Manual curators outperform any variant-level automation
+   for these categories by design. The benchmark measures
+   classifier-vs-curator agreement, not classifier-vs-ground-truth.
+2. **PVS1 / PS1 / BP7 fallback paths**: when the pipeline cannot
+   compute Abou Tayoun decision-tree signals (NMD, %protein removed)
+   for a specific transcript, those criteria fall back to conservative
+   legacy behavior. PVS1_Strong / PVS1_Moderate / PVS1_Supporting
+   firings in the table reflect cases where the pipeline *did* derive
+   the tree signal.
 3. **PS4 NotEvaluated by default**: the previous ClinVar-stars proxy was
-   replaced; opt back in via `use_clinvar_stars_as_ps4_proxy` for
-   backward-comparable benchmarks.
-4. **BA1/BS1 proxy in benchmark**: the Monte Carlo simulation uses
-   ClinVar significance class as a proxy for gnomAD AF. The classifier
-   itself uses real AF.
+   replaced; opt back in via `use_clinvar_stars_as_ps4_proxy` for a
+   backward-comparable benchmark.
+4. **gnomAD v4 mid / remaining populations**: added to the parser and
+   `max_pop_af` after the audit. The 9 chromosome `.osa` files built
+   before this change (chr 6, 13, 18, 20, 21, 22, MT, X, Y) lack those
+   keys; impact is small (mid + remaining ≈ 5 % of v4 cohort).
 
 ## Configuration
 
