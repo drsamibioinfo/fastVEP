@@ -297,6 +297,74 @@ JSON). This is the only output format that includes per-transcript
 ACMG/ACMG_CRITERIA fields in a stable column position — `tab` format
 ships only the basic VEP columns and `json` is verbose.
 
+### Figures
+
+Generate by running:
+```bash
+python3 analysis/acmg_benchmark/real_data/generate_figures.py
+```
+
+Outputs (`data/benchmark/output_full/figures/`, PNG + PDF):
+
+| File | Content |
+|------|---------|
+| `fig_concordance_matrix` | row-normalised truth × predicted heatmap |
+| `fig_recall_by_class` | per-class outcome breakdown (same / off / NoCall / opposite) |
+| `fig_v1_vs_v4_recall` | per-class same-direction recall, v1 baseline vs v4 |
+| `fig_headline_v1_vs_v4` | headline metrics (exact / same-dir / opposite / NoCall) v1 vs v4 |
+| `fig_criterion_fires` | top-18 criteria by total fire count, stacked by truth class |
+| `fig_bp7_pvs1_delta` | single-criterion lift v1 → v4 for BP7, PVS1, PS1, BS2, BA1 |
+
+### Run-to-run differences (v1 → v4)
+
+The benchmark was run end-to-end three times during the SVI alignment +
+SA-source build. The differences between runs map cleanly onto specific
+data and code changes:
+
+| Run | What was loaded / fixed | Same-dir | LB recall | B recall | BP7 fires | PVS1 fires |
+|-----|--------------------------|---------:|----------:|---------:|----------:|-----------:|
+| **v1** | Per-chrom gnomAD v4 + REVEL + ClinVar + ClinVar-protein .oga + gnomAD genes .oga | 54.7 % | 3.2 % | 33.2 % | 0 | 5,636 |
+| v2 | + PhyloP + SpliceAI .osa per chrom + ClinGen GDV .oga (loaded but with two latent wiring bugs) | 54.9 % | 3.3 % | 33.3 % | ≈0 | 23,703 |
+| **v4** | v2 data + two wiring fixes: SpliceAI `spliceAI` ↔ `spliceai`/`spliceAi` json_key alignment in `sa_extract.rs`; PhyloP read from `allele_supplementary` not just `variant_supplementary` | **63.7 %** | **42.4 %** | **58.0 %** | **81,688** | **27,460** |
+
+Diagnosis of the v1 → v4 lift:
+
+1. **PhyloP + SpliceAI loaded but invisible (v2 → v4 fix)**. The
+   SaWriter wrote SpliceAI under json_key `spliceAI` (capital AI), the
+   classifier matched `spliceai | spliceAi | splice_ai`. Result: every
+   SpliceAI lookup that succeeded at the .osa layer was discarded by
+   `extract_classification_input`. In parallel, the CLI pipeline
+   attaches all SA results to `aa.supplementary` (allele-level), but
+   the classifier read PhyloP exclusively from `variant_supplementary`
+   (variant-level). After the fix, BP7 went from 0 fires to 81,688 (47K
+   on LB synonymous + 34K on B synonymous). Direct cause of the +39 pp
+   LB recall and +25 pp Benign recall in v4.
+
+2. **ClinGen Gene-Disease Validity loaded** (v1 → v4). PVS1's
+   `is_lof_intolerant_gene` requires gnomAD `pLI ≥ 0.9` *or* `LOEUF ≤
+   0.35` *or* a curated disease-gene association. v1 had only the
+   gnomAD constraint path. v4 adds the ClinGen GDV `.oga` (2,419
+   Definitive/Strong/Moderate genes) — preferred per Abou Tayoun 2018
+   over the OMIM phenotype proxy. PVS1 fires went from 5,636 to 27,460
+   (4.9×); see `fig_bp7_pvs1_delta`.
+
+3. **NoCall rate appeared in v4** (0 % → 6.8 %). v1 read predicted
+   classifications from the JSON top-level array; v4 reads the picked
+   transcript's CSQ entry from VCF. When `--pick` selects a non-coding
+   / regulatory transcript whose CSQ row has no ACMG annotation (most
+   common for intergenic / 3'-UTR / downstream variants), the variant
+   counts as NoCall. The trade-off was kept on the side of cleaner
+   per-variant calls; aggregating across multiple transcripts would
+   reduce NoCall but force a decision among potentially disagreeing
+   transcripts.
+
+4. **Output format change** (v1–v3 JSON → v4 VCF.gz). Pretty-printed
+   JSON for the full benchmark is ~25 GB; the bgzipped VCF carrying
+   the same ACMG fields in CSQ INFO is ~70 MB (~360× smaller). The
+   concordance script was rewritten to stream the VCF.gz directly. Tab
+   format was considered but does not include ACMG/ACMG_CRITERIA
+   fields — only VCF preserves the full classification output.
+
 ### Real-Data Concordance (ClinVar 2-star+, April 2026 release)
 
 Truth records: **673,660** · Classified: **627,757** · Truth-not-annotated: **45,903** (variants where `--pick` selected a transcript whose CSQ entry had no ACMG field — typically intergenic / regulatory regions where no canonical-transcript context exists).
