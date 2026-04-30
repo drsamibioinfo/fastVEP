@@ -37,7 +37,7 @@ python3 generate_figures.py
 |------|---------|
 | `01_extract_clinvar_2star.py` | Filter ClinVar `clinvar.vcf.gz` → 2-star+ truth VCF + parallel TSV |
 | `03_evaluate_concordance.py`  | Stream the bgzipped VCF output of `fastvep annotate --acmg` and emit concordance matrix / per-chrom / per-consequence / per-criterion CSVs |
-| `generate_figures.py`         | Read the v6 outputs at `data/benchmark/output_v6/` and emit 6 PDF + PNG panels (incl. v1 vs v6 comparisons) |
+| `generate_figures.py`         | Read the v7 outputs at `data/benchmark/output_v7/` and emit 6 PDF + PNG panels (incl. v1 vs v7 comparisons) |
 
 ## Data sources
 

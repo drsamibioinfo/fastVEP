@@ -50,8 +50,8 @@ that drove each call in `details.pp3_source` / `details.ps1_path` /
 | Criterion | Strength | Description | Data Source / Notes |
 |-----------|----------|-------------|---------------------|
 | BA1 | Standalone | Common variant (AF > 5%) | gnomAD max population AF, with **AN ≥ 2000** minimum (gnomAD v4 / SVI March 2024). Honors the **9-variant Ghosh 2018 BA1 exception list** |
-| BS1 | Strong | Greater than expected frequency | gnomAD AF (gene-specific or default 0.01); same AN minimum as BA1 |
-| BS2 | Strong | Observed in healthy adults | gnomAD homozygote count + ClinGen GDV inheritance (or OMIM legacy) |
+| BS1 | Strong | Greater than expected frequency | gnomAD **max-population AF** (mirrors BA1; was cohort `all_af` pre-v7); gene-specific or default 0.01; same AN minimum as BA1 |
+| BS2 | Strong | Observed in healthy adults | gnomAD homozygote count + ClinGen GDV inheritance (or OMIM legacy). For AD-only genes: AC ≥ 5 (default; configurable via `bs2_ad_min_ac`). |
 | BS3 | Strong | Functional studies — no damage | Not automatable — NotEvaluated |
 | BS4 | Strong | Lack of segregation | Not automatable — NotEvaluated |
 | BP1 | Supporting | Missense in truncation-disease gene | gnomAD pLI ≥ 0.9 + misZ < 2.0 |
@@ -304,18 +304,18 @@ Generate by running:
 python3 analysis/acmg_benchmark/real_data/generate_figures.py
 ```
 
-Outputs (`data/benchmark/output_v6/figures/`, PNG + PDF):
+Outputs (`data/benchmark/output_v7/figures/`, PNG + PDF):
 
 | File | Content |
 |------|---------|
 | `fig_concordance_matrix` | row-normalised truth × predicted heatmap |
 | `fig_recall_by_class` | per-class outcome breakdown (same / off / NoCall / opposite) |
-| `fig_v1_vs_v6_recall` | per-class same-direction recall, v1 baseline vs v6 |
-| `fig_headline_v1_vs_v6` | headline metrics (exact / same-dir / opposite / NoCall) v1 vs v6 |
+| `fig_v1_vs_v7_recall` | per-class same-direction recall, v1 baseline vs v7 |
+| `fig_headline_v1_vs_v7` | headline metrics (exact / same-dir / opposite / NoCall) v1 vs v7 |
 | `fig_criterion_fires` | top-18 criteria by total fire count, stacked by truth class |
-| `fig_bp7_pvs1_delta` | single-criterion lift v1 → v6 for BP7, PVS1, PS1, BS2, BA1 |
+| `fig_bp7_pvs1_delta` | single-criterion lift v1 → v7 for BP7, PVS1, PS1, BS2, BA1 |
 
-### Run-to-run differences (v1 → v6)
+### Run-to-run differences (v1 → v7)
 
 The benchmark was run end-to-end multiple times during the SVI alignment
 + SA-source build. Each delta maps cleanly onto a specific data or code
@@ -327,7 +327,8 @@ change:
 | v2 | + PhyloP + SpliceAI .osa per chrom + ClinGen GDV .oga (loaded but with two latent wiring bugs) | 54.9 % | 16 % | 21 % | 3 % | 33 % | 23,703 | ≈12K |
 | v4 | v2 data + two wiring fixes: SpliceAI `spliceAI` ↔ `spliceai`/`spliceAi` json_key alignment in `sa_extract.rs`; PhyloP read from `allele_supplementary` not just `variant_supplementary`; output switched from JSON to bgzipped VCF (~360× smaller) | 63.7 % | 17 % | 26 % | 42 % | 58 % | 27,460 | ≈12K |
 | v5 | v4 + indel allele-matching fix in concordance script: VCF ALT (e.g. `CT`) doesn't match VEP CSQ Allele convention (`T`, `-`). Added `vep_allele(ref, alt)` to strip the leading common prefix. | 65.1 % | 21 % | 27 % | 42 % | 58 % | 52,289 | ≈12K |
-| **v6** | v5 + **PM2 fires when variant is absent from gnomAD** (`pm2_absent_when_no_record = true`, default; ClinGen SVI v1.0). + **BP4-splice gated to non-PVS1 consequences** (Walker 2023) — frameshift / stop_gained / canonical splice no longer get BP4 from low SpliceAI. | **70.3 %** | **64 %** | **52 %** | 42 % | 58 % | **50,062** | **340K** |
+| v6 | v5 + **PM2 fires when variant is absent from gnomAD** (`pm2_absent_when_no_record = true`, default; ClinGen SVI v1.0). + **BP4-splice gated to non-PVS1 consequences** (Walker 2023) — frameshift / stop_gained / canonical splice no longer get BP4 from low SpliceAI. | 70.3 % | 64 % | 52 % | 42 % | 58 % | 50,062 | 340K |
+| **v7** | v6 + **BS1 uses max-population AF** (mirrors BA1; was cohort `all_af`) per ClinGen SVI. + **BS2 AD requires AC ≥ `bs2_ad_min_ac`** (default 5) — singletons in gnomAD aren't "observed in healthy adult". | **70.8 %** | **64 %** | **52 %** | 43 % | **59 %** | **50,062** | **340K** |
 
 Diagnosis of the lifts:
 
@@ -398,19 +399,33 @@ Diagnosis of the lifts:
    format was considered but does not include ACMG/ACMG_CRITERIA
    fields — only VCF preserves the full classification output.
 
-### Real-Data Concordance (ClinVar 2-star+, April 2026 release)
+7. **+14,485 Benign exact-match calls (v6 → v7 fix)**. Two ClinGen-SVI
+   BS-tier corrections from a deep classifier audit:
+   - **BS1** was reading cohort `all_af` instead of `max_pop_af`. A
+     5%-AF EAS variant could slip under a 1% BS1 threshold whenever
+     the global cohort diluted it. ClinGen SVI applies BS1 against the
+     max-pop AF (mirroring BA1). Effect: BS1 fires went **6.4× higher**
+     (4,104 → 26,291); many LB calls promote to B once BS1+BP fires.
+   - **BS2** was firing for AD genes on any single het in gnomAD
+     (`AF > 0 && AN > 10000`) — a singleton novel allele in a 100K
+     cohort isn't "observed in healthy adult" per Richards 2015.
+     Tightened to AC ≥ 5 by default (`bs2_ad_min_ac`). False-positive
+     BS2 fires on Pathogenic ClinVar variants cut by **52%** (809 →
+     389); opposite-direction rate dropped 0.05% → 0.0%.
+
+### Real-Data Concordance (ClinVar 2-star+, April 2026 release; v7)
 
 Truth records: **673,660** · Classified: **673,659** · Truth-not-annotated: **1** (a single intergenic variant whose `--pick` transcript had no ACMG annotation).
 
-#### Truth × predicted matrix (v6)
+#### Truth × predicted matrix (v7)
 
 | Truth ↓ / Predicted → | P | LP | VUS | LB | B | NoCall |
 |--|--:|--:|--:|--:|--:|--:|
-| Pathogenic (n=79,823) | **6,450** | 44,506 | 28,676 | 181 | 9 | 1 |
-| Likely Pathogenic (n=13,989) | 670 | **6,574** | 6,711 | 34 | 0 | 0 |
-| VUS (n=295,298) | 73 | 3,237 | **270,264** | 18,449 | 3,275 | 0 |
-| Likely Benign (n=128,038) | 2 | 55 | 73,742 | **50,689** | 3,550 | 0 |
-| Benign (n=156,512) | 5 | 59 | 65,730 | 41,722 | **48,996** | 0 |
+| Pathogenic (n=79,823) | **6,450** | 44,684 | 28,520 | 150 | 18 | 1 |
+| Likely Pathogenic (n=13,989) | 670 | **6,604** | 6,691 | 24 | 0 | 0 |
+| VUS (n=295,298) | 73 | 3,238 | **271,659** | 17,609 | 2,719 | 0 |
+| Likely Benign (n=128,038) | 2 | 55 | 73,367 | **47,473** | 7,141 | 0 |
+| Benign (n=156,512) | 5 | 59 | 64,025 | 28,942 | **63,481** | 0 |
 
 (Diagonal = exact-match. Same-direction lumps P+LP for P/LP truth and
 LB+B for LB/B truth.)
@@ -419,22 +434,22 @@ LB+B for LB/B truth.)
 
 | Metric | Value |
 |--------|------:|
-| Exact-match (truth = predicted) | **56.8 %** |
-| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | **70.3 %** |
-| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **345 / 673,660 = 0.05 %** |
+| Exact-match (truth = predicted) | **58.7 %** |
+| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | **70.8 %** |
+| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **313 / 673,660 = 0.05 %** |
 | NoCall after annotation | 0.0 % |
 
 Per-class same-direction recall:
 
 | Truth class | Same-dir count | Recall |
 |-------------|---------------:|------:|
-| Pathogenic | 50,956 / 79,823 | **63.8 %** |
-| Likely Pathogenic | 7,244 / 13,989 | **51.8 %** |
-| VUS | 270,264 / 295,298 | **91.5 %** |
-| Likely Benign | 54,239 / 128,038 | **42.4 %** |
-| Benign | 90,718 / 156,512 | **58.0 %** |
+| Pathogenic | 51,134 / 79,823 | **64.0 %** |
+| Likely Pathogenic | 7,274 / 13,989 | **52.0 %** |
+| VUS | 271,659 / 295,298 | **92.0 %** |
+| Likely Benign | 54,614 / 128,038 | **42.7 %** |
+| Benign | 92,423 / 156,512 | **59.0 %** |
 
-#### Most-triggered criterion signatures (v6)
+#### Most-triggered criterion signatures (v7)
 
 The VCF output records the set of criteria met but not the named
 combination rule (the rule is reconstructed offline). Top signatures by
@@ -500,7 +515,7 @@ non-PVS1 splice variants that the gate doesn't affect.)
 - **Opposite-direction rate is 0.05 %** (345 / 673,660): when the
   classifier commits to a directional call it agrees with the
   curated review-panel call ~99.95 % of the time. Per-variant
-  discrepancies are in `data/benchmark/output_v6/discrepancies.tsv`
+  discrepancies are in `data/benchmark/output_v7/discrepancies.tsv`
   for case-by-case review.
 - **NoCall is 0.0 %** in v5+ (after the indel-allele-matching fix).
   Earlier runs reported 6.8 % NoCall, but this was an artefact of the
