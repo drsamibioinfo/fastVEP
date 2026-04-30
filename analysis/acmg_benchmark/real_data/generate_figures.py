@@ -311,7 +311,7 @@ def fig_v1_vs_v4_recall(matrix, fig_dir: Path):
         width,
         color=C["v4"],
         alpha=0.95,
-        label="v4: + PhyloP + SpliceAI + ClinGen GDV (current)",
+        label="v5: + PhyloP + SpliceAI + ClinGen GDV + indel allele fix (current)",
     )
     ax.set_xticks(x)
     ax.set_xticklabels([CLASS_SHORT[c] for c in CLASSES], fontweight="bold", fontsize=14)
@@ -436,12 +436,12 @@ def fig_headline_v1_vs_v4(out_dir: Path, fig_dir: Path):
     v1 = [V1_HEADLINE[k] for _, k in metrics]
     v4 = [headline.get(k, 0.0) for _, k in metrics]
     ax.bar(x - width / 2, v1, width, color=C["v1"], alpha=0.9, label="v1")
-    ax.bar(x + width / 2, v4, width, color=C["v4"], alpha=0.95, label="v4")
+    ax.bar(x + width / 2, v4, width, color=C["v4"], alpha=0.95, label="v5")
 
     ax.set_xticks(x)
     ax.set_xticklabels([lab for lab, _ in metrics], fontsize=13, fontweight="bold")
     ax.set_ylabel("%")
-    ax.set_title("Headline concordance metrics: v1 vs v4", fontweight="bold")
+    ax.set_title("Headline concordance metrics: v1 vs v5", fontweight="bold")
     ax.legend()
     ax.grid(axis="y", alpha=0.15)
 

@@ -85,9 +85,34 @@ def parse_info_csq(info: str) -> str | None:
     return None
 
 
+def vep_allele(ref: str, alt: str) -> str:
+    """Convert a VCF (REF, ALT) pair to VEP's CSQ-Allele convention.
+
+    VEP strips the leading common prefix between REF and ALT:
+      C  → CT      ⇒ "T"        (insertion of T)
+      CT → C       ⇒ "-"        (single-base deletion)
+      AGGT → A     ⇒ "-"        (multi-base deletion)
+      G  → GGGGCC  ⇒ "GGGCC"    (insertion)
+      C  → T       ⇒ "T"        (SNV — no shared prefix to strip)
+      AT → GC      ⇒ "GC"       (MNV — no shared prefix)
+
+    A pure deletion (alt collapses to empty after stripping) is
+    represented as the literal "-" in CSQ.
+    """
+    if ref == alt:
+        return alt
+    i = 0
+    while i < len(ref) and i < len(alt) and ref[i] == alt[i]:
+        i += 1
+    new_alt = alt[i:]
+    return new_alt if new_alt else "-"
+
+
 def variant_records(vcf_path):
     """Yield (chrom, pos, ref, alt, csq_field_idx_map, csq_entries_for_alt)
-    for each variant in the VCF. Multi-allelic sites are split per ALT."""
+    for each variant in the VCF. Multi-allelic sites are split per ALT.
+    Indels are matched on the VEP allele convention (see `vep_allele`).
+    """
     csq_idx = None
     with open_text(vcf_path) as f:
         for line in f:
@@ -113,16 +138,18 @@ def variant_records(vcf_path):
             if csq_field is None:
                 continue
             entries = csq_field.split(",")
-            # Group entries by their ALT (CSQ field 0 = Allele).
-            by_alt: dict[str, list[list[str]]] = defaultdict(list)
+            # Group entries by their CSQ Allele (field 0). For indels the
+            # VCF ALT (e.g. "CT") doesn't match the CSQ Allele (e.g. "T"
+            # for a one-base insertion), so we normalise via vep_allele.
+            by_csq_allele: dict[str, list[list[str]]] = defaultdict(list)
             for ent in entries:
                 parts = ent.split("|")
                 if len(parts) <= csq_idx.get("ACMG", -1):
                     continue
-                alt_field = parts[0]
-                by_alt[alt_field].append(parts)
+                by_csq_allele[parts[0]].append(parts)
             for alt in alts:
-                yield (chrom, pos, ref, alt, csq_idx, by_alt.get(alt, []))
+                csq_alt = vep_allele(ref, alt)
+                yield (chrom, pos, ref, alt, csq_idx, by_csq_allele.get(csq_alt, []))
 
 
 def pick_csq(entries: list[list[str]], csq_idx: dict[str, int]):
